@@ -75,7 +75,7 @@ async def chat(body: dict):
             return {"reply": text or "ระบบยังไม่สามารถตอบได้", "recommendations": []}
 
     except Exception as e:
-        print("[api] chat failed:", e)
+        print("[api] chat failed:", repr(e))
         return {
             "reply": f"เกิดข้อผิดพลาด: {str(e)}",
             "recommendations": [],
