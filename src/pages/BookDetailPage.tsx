@@ -1,5 +1,7 @@
 import { useParams, Link } from "react-router-dom";
 import { Star, Heart, ArrowLeft, User, Building2, Send } from "lucide-react";
+import { useState, useEffect, useLayoutEffect } from "react";
+
 import { useBooks } from "@/context/BooksContext";
 import { useFavorites } from "@/lib/favorites";
 import { useAuth } from "@/context/AuthContext";
@@ -7,7 +9,6 @@ import { supabase } from "@/integrations/supabase/client";
 import BookCard from "@/components/BookCard";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { useState, useEffect, useLayoutEffect } from "react";
 
 type Review = {
   reviewID: number;
@@ -24,12 +25,6 @@ type Review = {
 const BookDetailPage = () => {
   const { id } = useParams();
 
-  useLayoutEffect(() => {
-    window.scrollTo(0, 0);
-    document.documentElement.scrollTop = 0;
-    document.body.scrollTop = 0;
-  }, [id]);
-
   const { books = [], refetch: refetchBooks, patchBook } = useBooks();
   const { toggle, check } = useFavorites();
   const { user } = useAuth();
@@ -41,183 +36,115 @@ const BookDetailPage = () => {
   const [hoverRating, setHoverRating] = useState(0);
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [myReview, setMyReview] = useState<Review | null>(null);
 
-  /* =======================
-     📝 Log interaction helper
-  ======================= */
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [id]);
+
+  const book = books.find((b) => String(b.id ?? b.bookID) === String(id));
+
   const logInteraction = async (actionType: string, bookID: number) => {
     if (!user) return;
 
-    try {
-      await supabase.from("interaction" as any).insert({
-        bookID,
-        user_id: user.id,
-        actionType,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (err) {
-      console.debug("Failed to log interaction:", actionType, err);
-    }
+    await supabase.from("interaction" as any).insert({
+      bookID,
+      user_id: user.id,
+      actionType,
+      createdAt: new Date().toISOString(),
+    });
   };
 
-  /* =======================
-     📥 Fetch Reviews
-  ======================= */
-  const fetchReviews = async (bookID: number): Promise<Review[]> => {
+  const fetchReviews = async (bookID: number) => {
     setReviewLoading(true);
-    let reviewsWithProfile: Review[] = [];
 
-    const { data } = await supabase
+    const { data } = (await supabase
       .from("review" as any)
       .select("reviewID, rating, comment, createdAt, user_id")
       .eq("bookID", bookID)
-      .order("createdAt", { ascending: false }) as any;
+      .order("createdAt", { ascending: false })) as any;
 
-    if (data) {
-      reviewsWithProfile = await Promise.all(
-        (data as Review[]).map(async (r) => {
-          const { data: p } = await supabase
-            .from("profiles" as any)
-            .select("display_name, avatar_url")
-            .eq("userID", r.user_id)
-            .maybeSingle() as any;
-          return { ...r, profiles: p ?? undefined };
-        })
-      );
+    const reviewsWithProfile: Review[] = await Promise.all(
+      (data ?? []).map(async (r: Review) => {
+        const { data: profile } = (await supabase
+          .from("profiles" as any)
+          .select("display_name, avatar_url")
+          .eq("userID", r.user_id)
+          .maybeSingle()) as any;
 
-      setReviews(reviewsWithProfile);
+        return {
+          ...r,
+          profiles: profile ?? undefined,
+        };
+      })
+    );
 
-      if (user) {
-        const mine = reviewsWithProfile.find((r) => r.user_id === user.id);
-        if (mine) {
-          setMyReview(mine);
-          setMyRating(mine.rating);
-          setComment(mine.comment || "");
-        } else {
-          setMyReview(null);
-          setMyRating(0);
-          setComment("");
-        }
-      }
-    } else {
-      setReviews([]);
-      if (user) {
-        setMyReview(null);
-        setMyRating(0);
-        setComment("");
-      }
-    }
-
+    setReviews(reviewsWithProfile);
     setReviewLoading(false);
+
     return reviewsWithProfile;
   };
 
   useEffect(() => {
     if (id) fetchReviews(Number(id));
-  }, [id, user]);
+  }, [id]);
 
-  /* =======================
-     👁️ Log view interaction
-  ======================= */
   useEffect(() => {
-    if (!id || !user) return;
-    logInteraction("view", Number(id));
+    if (id && user) {
+      logInteraction("view", Number(id));
+    }
   }, [id, user]);
 
-  /* =======================
-     💾 Submit Review
-  ======================= */
+  const updateBookRating = (reviewList: Review[]) => {
+    if (!id) return;
+
+    const avg = reviewList.length
+      ? reviewList.reduce((sum, r) => sum + (r.rating ?? 0), 0) /
+        reviewList.length
+      : 0;
+
+    patchBook(String(id), {
+      rating: Number(avg.toFixed(1)),
+      reviewCount: reviewList.length,
+    });
+  };
+
   const handleSubmit = async () => {
     if (!user) {
       toast({ title: "กรุณาเข้าสู่ระบบก่อน", variant: "destructive" });
       return;
     }
+
     if (myRating === 0) {
       toast({ title: "กรุณาให้คะแนนก่อน", variant: "destructive" });
       return;
     }
 
     setSubmitting(true);
-    const book = books.find((b) => b.id === id);
-    const snapshot = book ? { rating: book.rating ?? 0, reviewCount: book.reviewCount ?? 0 } : null;
 
     try {
-      if (book) {
-        if (myReview) {
-          const oldRating = myReview.rating ?? 0;
-          const count = book.reviewCount ?? 0;
-          const newAvg =
-            count > 0
-              ? ((book.rating ?? 0) * count - oldRating + myRating) / count
-              : myRating;
-          patchBook(String(id), { rating: Number(newAvg.toFixed(1)), reviewCount: count });
-        } else {
-          const oldRating = book.rating ?? 0;
-          const oldCount = book.reviewCount ?? 0;
-          const newCount = oldCount + 1;
-          const newAvg =
-            newCount > 0
-              ? (oldRating * oldCount + myRating) / newCount
-              : myRating;
-          patchBook(String(id), { rating: Number(newAvg.toFixed(1)), reviewCount: newCount });
-        }
-      }
+      const { error } = await supabase.from("review" as any).insert({
+        bookID: Number(id),
+        user_id: user.id,
+        rating: myRating,
+        comment: comment.trim(),
+        createdAt: new Date().toISOString(),
+      });
 
-      if (myReview) {
-        const { error } = await supabase
-          .from("review" as any)
-          .update({ rating: myRating, comment: comment.trim() })
-          .eq("reviewID", myReview.reviewID);
+      if (error) throw error;
 
-        if (error) throw error;
-        await logInteraction("review", Number(id));
-        toast({ title: "แก้ไขรีวิวสำเร็จ ✅" });
-      } else {
-        const { error } = await supabase
-          .from("review" as any)
-          .insert({
-            bookID: Number(id),
-            user_id: user.id,
-            rating: myRating,
-            comment: comment.trim(),
-            createdAt: new Date().toISOString(),
-          });
+      await logInteraction("review", Number(id));
 
-        if (error) throw error;
-        await logInteraction("review", Number(id));
-        toast({ title: "รีวิวสำเร็จ ✅" });
-      }
+      const reviewsAfter = await fetchReviews(Number(id));
+      updateBookRating(reviewsAfter);
 
-      try {
-        const reviewsAfter = await fetchReviews(Number(id));
-        const avg = reviewsAfter.length
-          ? reviewsAfter.reduce((s, r) => s + (r.rating ?? 0), 0) / reviewsAfter.length
-          : 0;
+      setMyRating(0);
+      setHoverRating(0);
+      setComment("");
 
-        if (id) {
-          patchBook(String(id), {
-            rating: Number(avg.toFixed(1)),
-            reviewCount: reviewsAfter.length,
-          });
-        }
-      } catch (e) {
-        console.debug("Unable to refresh reviews after submit", e);
-      }
+      await refetchBooks();
 
-      try {
-        await refetchBooks();
-      } catch (e) {
-        console.debug("Failed to refetch books after submit", e);
-      }
+      toast({ title: "ส่งความคิดเห็นสำเร็จ ✅" });
     } catch (err: any) {
-      if (snapshot && id) {
-        patchBook(String(id), {
-          rating: snapshot.rating,
-          reviewCount: snapshot.reviewCount,
-        });
-      }
-
       toast({
         title: "เกิดข้อผิดพลาด",
         description: err.message,
@@ -228,74 +155,17 @@ const BookDetailPage = () => {
     }
   };
 
-  /* =======================
-     🗑️ Delete Review
-  ======================= */
-  const handleDelete = async () => {
-    if (!myReview) return;
-
-    const book = books.find((b) => b.id === id);
-    const snapshot = book ? { rating: book.rating ?? 0, reviewCount: book.reviewCount ?? 0 } : null;
-
-    try {
-      if (book) {
-        const oldRating = myReview.rating ?? 0;
-        const oldCount = book.reviewCount ?? 0;
-        const newCount = Math.max(0, oldCount - 1);
-        const newAvg =
-          newCount > 0
-            ? (((book.rating ?? 0) * oldCount - oldRating) / newCount)
-            : 0;
-
-        patchBook(String(id), {
-          rating: Number(newAvg.toFixed(1)),
-          reviewCount: newCount,
-        });
-      }
-
-      await supabase.from("review" as any).delete().eq("reviewID", myReview.reviewID);
-      await logInteraction("review_delete", Number(id));
-
-      setMyReview(null);
-      setMyRating(0);
-      setComment("");
-      toast({ title: "ลบรีวิวสำเร็จ 🗑️" });
-
-      try {
-        await refetchBooks();
-      } catch (e) {
-        console.debug("Failed to refetch books after delete", e);
-      }
-    } catch (err: any) {
-      if (snapshot && id) {
-        patchBook(String(id), {
-          rating: snapshot.rating,
-          reviewCount: snapshot.reviewCount,
-        });
-      }
-
-      toast({
-        title: "เกิดข้อผิดพลาด",
-        description: err.message,
-        variant: "destructive",
-      });
-    }
-  };
-
-    /* =======================
-     ❤️ Toggle Favorite + Log Interaction
-  ======================= */
   const handleFavoriteToggle = async () => {
+    if (!book) return;
+
     try {
       const wasFav = check(book.id);
-
       await toggle(book.id);
 
       if (user && id) {
         await logInteraction(wasFav ? "unfavorite" : "favorite", Number(id));
       }
-    } catch (err) {
-      console.debug("Failed to toggle favorite from detail page:", err);
+    } catch {
       toast({
         title: "เกิดข้อผิดพลาด",
         description: "ไม่สามารถอัปเดตรายการโปรดได้",
@@ -312,8 +182,6 @@ const BookDetailPage = () => {
     );
   }
 
-  const book = books.find((b) => b.id === id);
-
   if (!book) {
     return (
       <div className="container py-20 text-center">
@@ -328,31 +196,26 @@ const BookDetailPage = () => {
   const isFav = check(book.id);
   const genres = book.genres ?? [];
   const tags = book.tags ?? [];
+
+  const avgRating = reviews.length
+    ? reviews.reduce((sum, r) => sum + (r.rating ?? 0), 0) / reviews.length
+    : book.rating ?? 0;
+
   const relatedBooks = books
     .filter((b) => String(b.id ?? b.bookID) !== String(book.id ?? book.bookID))
     .map((b) => {
       const currentTags = book.tags ?? book.genres ?? [];
       const otherTags = b.tags ?? b.genres ?? [];
-
       const matchCount = otherTags.filter((tag: string) =>
         currentTags.includes(tag)
       ).length;
 
-      return {
-        book: b,
-        matchCount,
-      };
+      return { book: b, matchCount };
     })
-    // เอาเฉพาะเล่มที่แท็กตรงกัน 2 แท็กขึ้นไป
     .filter((item) => item.matchCount >= 2)
-    // เรียงเล่มที่แท็กตรงเยอะสุดขึ้นก่อน
     .sort((a, b) => b.matchCount - a.matchCount)
     .map((item) => item.book)
     .slice(0, 10);
-
-  const avgRating = reviews.length
-    ? reviews.reduce((sum, r) => sum + (r.rating ?? 0), 0) / reviews.length
-    : (book.rating ?? 0);
 
   return (
     <div className="container py-8">
@@ -373,6 +236,7 @@ const BookDetailPage = () => {
               className="w-full object-cover aspect-[2/3]"
             />
           </div>
+
           <button
             onClick={handleFavoriteToggle}
             className={`flex w-full items-center justify-center gap-2 rounded-xl py-3 text-sm font-semibold transition-all ${
@@ -395,11 +259,15 @@ const BookDetailPage = () => {
                 ? "ไลท์โนเวล"
                 : "นิยาย"}
             </span>
+
             <h1 className="mt-3 text-3xl font-extrabold text-foreground font-display">
               {book.title}
             </h1>
+
             {book.titleEn && (
-              <p className="mt-1 text-lg text-muted-foreground">{book.titleEn}</p>
+              <p className="mt-1 text-lg text-muted-foreground">
+                {book.titleEn}
+              </p>
             )}
           </div>
 
@@ -416,8 +284,14 @@ const BookDetailPage = () => {
                 />
               ))}
             </div>
-            <span className="text-lg font-bold text-foreground">{avgRating.toFixed(1)}</span>
-            <span className="text-sm text-muted-foreground">({reviews.length} รีวิว)</span>
+
+            <span className="text-lg font-bold text-foreground">
+              {avgRating.toFixed(1)}
+            </span>
+
+            <span className="text-sm text-muted-foreground">
+              ({reviews.length} รีวิว)
+            </span>
           </div>
 
           <div className="text-2xl font-bold text-primary">฿{book.price ?? 0}</div>
@@ -427,14 +301,19 @@ const BookDetailPage = () => {
               <User className="h-4 w-4 text-primary" />
               <div>
                 <p className="text-xs text-muted-foreground">ผู้แต่ง</p>
-                <p className="text-sm font-medium text-foreground">{book.author || "-"}</p>
+                <p className="text-sm font-medium text-foreground">
+                  {book.author || "-"}
+                </p>
               </div>
             </div>
+
             <div className="flex items-center gap-2 rounded-lg bg-secondary p-3">
               <Building2 className="h-4 w-4 text-primary" />
               <div>
                 <p className="text-xs text-muted-foreground">สำนักพิมพ์</p>
-                <p className="text-sm font-medium text-foreground">{book.publisher || "-"}</p>
+                <p className="text-sm font-medium text-foreground">
+                  {book.publisher || "-"}
+                </p>
               </div>
             </div>
           </div>
@@ -458,6 +337,7 @@ const BookDetailPage = () => {
                   {g}
                 </Link>
               ))}
+
               {tags.map((t) => (
                 <span
                   key={t}
@@ -473,7 +353,7 @@ const BookDetailPage = () => {
 
       <section className="mt-12">
         <h2 className="mb-6 text-xl font-bold text-foreground font-display">
-          ✍️ {myReview ? "แก้ไขรีวิวของคุณ" : "เขียนรีวิว"}
+          ✍️ แสดงความคิดเห็น
         </h2>
 
         {!user ? (
@@ -481,7 +361,7 @@ const BookDetailPage = () => {
             <Link to="/auth" className="text-primary hover:underline">
               เข้าสู่ระบบ
             </Link>{" "}
-            เพื่อเขียนรีวิว
+            เพื่อแสดงความคิดเห็น
           </div>
         ) : (
           <div className="rounded-2xl border border-border bg-card p-6 space-y-4">
@@ -506,6 +386,7 @@ const BookDetailPage = () => {
                     />
                   </button>
                 ))}
+
                 {myRating > 0 && (
                   <span className="ml-2 self-center text-sm text-muted-foreground">
                     {myRating}/5
@@ -525,17 +406,10 @@ const BookDetailPage = () => {
               />
             </div>
 
-            <div className="flex gap-2">
-              <Button onClick={handleSubmit} disabled={submitting} className="gap-2">
-                <Send className="h-4 w-4" />
-                {submitting ? "กำลังบันทึก..." : myReview ? "แก้ไขรีวิว" : "ส่งรีวิว"}
-              </Button>
-              {myReview && (
-                <Button variant="destructive" onClick={handleDelete}>
-                  ลบรีวิว
-                </Button>
-              )}
-            </div>
+            <Button onClick={handleSubmit} disabled={submitting} className="gap-2">
+              <Send className="h-4 w-4" />
+              {submitting ? "กำลังบันทึก..." : "ส่งความคิดเห็น"}
+            </Button>
           </div>
         )}
       </section>
@@ -551,7 +425,9 @@ const BookDetailPage = () => {
         </h2>
 
         {reviewLoading ? (
-          <div className="text-center py-8 text-muted-foreground animate-pulse">กำลังโหลด...</div>
+          <div className="text-center py-8 text-muted-foreground animate-pulse">
+            กำลังโหลด...
+          </div>
         ) : reviews.length === 0 ? (
           <div className="rounded-2xl border border-border bg-card p-8 text-center text-muted-foreground">
             ยังไม่มีรีวิว — เป็นคนแรกที่รีวิวหนังสือเล่มนี้!
@@ -579,13 +455,17 @@ const BookDetailPage = () => {
                       <User className="h-4 w-4 text-muted-foreground" />
                     )}
                   </div>
+
                   <div>
                     <p className="text-sm font-medium text-foreground">
                       {r.profiles?.display_name || "ผู้ใช้งาน"}
                       {r.user_id === user?.id && (
-                        <span className="ml-2 text-xs text-primary font-normal">(คุณ)</span>
+                        <span className="ml-2 text-xs text-primary font-normal">
+                          (คุณ)
+                        </span>
                       )}
                     </p>
+
                     <p className="text-xs text-muted-foreground">
                       {r.createdAt
                         ? new Date(r.createdAt).toLocaleDateString("th-TH", {
@@ -629,7 +509,7 @@ const BookDetailPage = () => {
           </h2>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-            {relatedBooks.slice(0, 10).map((b) => (
+            {relatedBooks.map((b) => (
               <div key={String(b.id ?? b.bookID)} className="scale-90 origin-top">
                 <BookCard book={b} />
               </div>
