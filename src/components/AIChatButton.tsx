@@ -98,34 +98,71 @@ export default function AIChatButton() {
     setLoading(true);
 
     try {
-      // 🔥 filter หนังสือที่เกี่ยวข้องเท่านั้น
-      const q = userMsg.toLowerCase();
+      const normalized = userMsg.toLowerCase();
+      
+      const typeMap : Record<string, string> = {
+        "มังงะ": "manga",
+        "นิยาย": "novel",
+        "ไลท์โนเวล": "light-novel",
+      };
 
-      const booksContext = books
+      const tagList = [
+        "แฟนตาซี",
+        "ไซไฟ",
+        "สืบสวน",
+        "โรแมนติก",
+        "คอมเมดี้",
+        "ดราม่า",
+        "ผจญภัย",
+        "สยองขวัญ",
+        "ชีวิตประจำวัน",
+        "แอ็กชัน",
+        "BL ( Boy Love )",
+        "GL ( Girl Love )",
+      ];
+
+      const wantedType = Object.entries(typeMap).find(([thai]) =>
+        normalized.includes(thai.toLowerCase())
+      )?.[1];
+
+      const wantedTags = tagList.filter((tag) =>
+        normalized.includes(tag.toLowerCase())
+      );
+
+      let booksContext = books
         .filter((b: any) => {
-          const text = [
-            b.title,
-            b.titleEn,
-            b.type,
-            b.authorName,
-            ...(b.tags ?? []),
-          ]
-            .join(" ")
-            .toLowerCase();
+          const bookType = String(b.type || "").toLowerCase();
+          const bookTags = (b.tags ?? []).map((t: string) => t.toLowerCase());
 
-          return (
-            text.includes(q) ||
-            q.length <= 3
-          );
+          const matchType = !wantedType || bookType === wantedType;
+    
+          const matchTags =
+            wantedTags.length === 0 ||
+            wantedTags.some((tag) => bookTags.includes(tag.toLowerCase()));
+
+          return matchType && matchTags;
         })
-        .slice(0, 15)
+        .slice(0, 10)
         .map((b: any) => ({
           title: b.title,
           titleEn: b.titleEn,
           type: b.type,
           tags: b.tags ?? [],
-          author: b.authorName,
+          authorName: b.authorName,
+          description: b.description ?? "",
         }));
+          
+      // ถ้าไม่เจอเลย ส่ง top books ไปแทน
+      if (booksContext.length === 0) {
+        booksContext = books.slice(0, 10).map((b: any) => ({
+          title: b.title,
+          titleEn: b.titleEn,
+          type: b.type,
+          tags: b.tags ?? [],
+          authorName: b.authorName,
+          description: b.description ?? "",
+        }));
+      }
 
       const res = await fetch(
         `${API_URL}/chat`,
@@ -231,41 +268,35 @@ export default function AIChatButton() {
                     {msg.content}
                   </div>
 
-                  {!!msg.recommendedBooks
-                    ?.length && (
-                    <div className="mt-3 space-y-3">
-                      <p className="text-xs font-medium text-muted-foreground">
+                  {!!msg.recommendedBooks?.length && (
+                    <div className="mt-3">
+                      <p className="mt-2 text-xs font-medium text-muted-foreground">
                         หนังสือแนะนำ
                       </p>
 
-                      {msg.recommendedBooks.map(
-                        ({
-                          book,
-                          reason,
-                        }) => (
+                      <div className="flex gap-3 overflow-x-auto py-2">
+                        {msg.recommendedBooks.map(({ book, reason }) => (
                           <div
-                            key={book.id}
-                            className="space-y-2"
+                            key={String(book.id ?? book.bookID)}
+                            className="w-36 flex-shrink-0"
                           >
                             <div className="overflow-hidden rounded-xl bg-background">
-                              <BookCard
-                                book={book}
-                              />
+                              <BookCard book={book} />
                             </div>
 
                             {reason && (
-                              <p className="px-1 text-xs text-muted-foreground">
+                              <p className="mt-1 line-clamp-2 px-1 text-[11px] text-muted-foreground">
                                 {reason}
                               </p>
                             )}
                           </div>
-                        )
-                      )}
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
               </div>
-            ))}
+            ))}  
 
             {loading && (
               <div className="flex justify-start">
