@@ -5,4 +5,4 @@ numpy
 pandas
 supabase
 python-dotenv
-openai
+google-genai
